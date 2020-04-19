@@ -14,7 +14,7 @@
 #include <queue>
 #include <rtthread.h>
 #include "tiny_ros/ros/time.h"
-#include "tiny_ros/thread_pool.h"
+#include "tiny_ros/ros/threadpool.h"
 #include "tiny_ros/roslib_msgs/Time.h"
 #include "tiny_ros/roslib_msgs/String.h"
 #include "tiny_ros/tinyros_msgs/TopicInfo.h"
@@ -22,12 +22,10 @@
 
 #define TINYROS_LOG_TOPIC "tinyros_log_11315"
 namespace tinyros {
-class NodeHandle;
 class SpinObject {
 public:
   int id;
   uint8_t *message_in;
-  NodeHandle *nh;
   SpinObject() { message_in = NULL; }
   ~SpinObject() { if(message_in) free((void*)message_in); }
 };
@@ -75,8 +73,6 @@ const int OUTPUT_SIZE = 100; // bytes
 
 using tinyros_msgs::TopicInfo;
 
-static void spin_task(void* arg);
-
 class NodeHandle : public NodeHandleBase_
 {
 public:
@@ -87,9 +83,9 @@ public:
 
   struct rt_mutex mutex_;
 
-  thread_pool spin_thread_pool_;
-  thread_pool spin_log_thread_pool_;
-  thread_pool spin_srv_thread_pool_;
+  ThreadPool<NodeHandle> spin_thread_pool_;
+  ThreadPool<NodeHandle> spin_log_thread_pool_;
+  ThreadPool<NodeHandle> spin_srv_thread_pool_;
 
   uint8_t *message_in;
   uint8_t *message_tmp;
@@ -104,6 +100,9 @@ public:
 public:
   NodeHandle()
     : logpb_(TINYROS_LOG_TOPIC, new tinyros_msgs::Log)
+    , spin_thread_pool_("spin", 2, 1024)
+    , spin_log_thread_pool_("log", 1, 1024)
+    , spin_srv_thread_pool_("srv", 2, 1024)
     , executable_name("")
     , executable_len(0)
     , topic_list("")
@@ -112,10 +111,6 @@ public:
     executable_len = executable_name.length();
 
     rt_mutex_init(&mutex_, "nh", RT_IPC_FLAG_FIFO);
-
-    init_thread_pool(&spin_thread_pool_, "spin", 2, 1024);
-    init_thread_pool(&spin_srv_thread_pool_, "srv", 2, 1024);
-    init_thread_pool(&spin_log_thread_pool_, "log", 1, 1024);
 
     for (unsigned int i = 0; i < MAX_PUBLISHERS; i++)
       publishers[i] = NULL;
@@ -131,14 +126,14 @@ public:
   }
 
   ~NodeHandle() {
-    spin_thread_pool_.del_all(&spin_thread_pool_);
-    spin_thread_pool_.destroy(&spin_thread_pool_);
+    hardware_.close();
+    loghd_.close();
 
-    spin_srv_thread_pool_.del_all(&spin_srv_thread_pool_);
-    spin_srv_thread_pool_.destroy(&spin_srv_thread_pool_);
+    if (message_in) free((void*)message_in);
+    if (message_tmp) free((void*)message_tmp);
+    if (message_out) free((void*)message_out);
 
-    spin_log_thread_pool_.del_all(&spin_log_thread_pool_);
-    spin_log_thread_pool_.destroy(&spin_log_thread_pool_);
+    rt_mutex_detach(&mutex_);
   }
 
   Hardware* getHardware()
@@ -311,18 +306,17 @@ public:
           } else {
             if (((topic_-100) >= 0) && subscribers[topic_-100]) {
               if(subscribers[topic_-100]) {
-                SpinObject* obj = (SpinObject*) calloc(1, sizeof(SpinObject));
-                obj->nh = this;
+                SpinObject* obj = new SpinObject();
                 obj->id = topic_-100;
                 obj->message_in = (uint8_t*)calloc(total_bytes_, sizeof(uint8_t));
                 memcpy(obj->message_in, message_in, total_bytes_);
                 if (!strcmp(subscribers[topic_-100]->topic_, TINYROS_LOG_TOPIC)) {
-                  spin_log_thread_pool_.add_task(&spin_log_thread_pool_, spin_task, (void*)obj);
+                  spin_log_thread_pool_.schedule(&NodeHandle::spin_task, this, obj);
                 } else {
                   if (subscribers[topic_-100]->srv_flag_) {
-                    spin_srv_thread_pool_.add_task(&spin_srv_thread_pool_, spin_task, (void*)obj);
+                    spin_srv_thread_pool_.schedule(&NodeHandle::spin_task, this, obj);
                   } else {
-                    spin_thread_pool_.add_task(&spin_thread_pool_, spin_task, (void*)obj);
+                    spin_thread_pool_.schedule(&NodeHandle::spin_task, this, obj);
                   }
                 }
               }
@@ -335,6 +329,28 @@ public:
     return SPIN_OK;
   }
 
+  void spin_task(void *arg, bool destroy) {
+    SpinObject* obj = (SpinObject*) arg;
+    if (!obj) return;
+    if (!destroy) {
+      if(subscribers[obj->id] && obj->message_in){
+        int64_t time_start = (int64_t)tinyros::Time().now().toMSec();
+        int64_t timeout_time = time_start + 1000;
+
+        subscribers[obj->id]->callback( obj->message_in );
+
+        int64_t time_end = (int64_t)tinyros::Time().now().toMSec();
+        if (time_end > timeout_time) {
+          char bufer[512];
+          snprintf(bufer, sizeof(bufer), "[%s] subscriber topic: %s, time escape: %lld(ms)", executable_name.c_str(),
+              subscribers[obj->id]->topic_, (time_end - time_start));
+          logwarn(bufer);
+        }
+      }
+    }
+
+    delete obj;
+  }
 
   /* Are we connected to the PC? */
   virtual bool ok() {
@@ -601,27 +617,6 @@ public:
     return service_list;
   }
 };
-
-static void spin_task(void* arg) {
-  SpinObject* obj = (SpinObject*)arg;
-  if (obj == RT_NULL || obj->nh == RT_NULL ||obj->message_in == RT_NULL) {
-    return;
-  }
-
-  NodeHandle* nh = obj->nh;
-  int64_t time_start = (int64_t)tinyros::Time().now().toMSec();
-  int64_t timeout_time = time_start + 1000;
-
-  nh->subscribers[obj->id]->callback(obj->message_in);
-
-  int64_t time_end = (int64_t)tinyros::Time().now().toMSec();
-  if (time_end > timeout_time) {
-    char bufer[512];
-    snprintf(bufer, sizeof(bufer), "[%s] subscriber topic: %s, time escape: %lld(ms)", nh->executable_name.c_str(),
-      nh->subscribers[obj->id]->topic_, (time_end - time_start));
-    nh->logwarn(bufer);
-  }
-}
 
 NodeHandle* nh();
 

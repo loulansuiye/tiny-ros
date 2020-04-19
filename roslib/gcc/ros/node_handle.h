@@ -183,9 +183,12 @@ public:
   }
 
   ~NodeHandle_() {
-    spin_thread_pool_.shutdown();
-    spin_srv_thread_pool_.shutdown();
-    spin_log_thread_pool_.shutdown();
+    hardware_.close();
+    loghd_.close();
+
+    if (message_in) free((void*)message_in);
+    if (message_tmp) free((void*)message_tmp);
+    if (message_out) free((void*)message_out);
   }
 
   Hardware* getHardware()

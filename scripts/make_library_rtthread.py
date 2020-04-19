@@ -715,8 +715,6 @@ def roslib_copy_roslib_files(path):
              'components/tiny_ros/time.cpp',
              'components/tiny_ros/ros.cpp',
              'components/tiny_ros/ros.h',
-             'components/tiny_ros/thread_pool.cpp',
-             'components/tiny_ros/thread_pool.h',
              'components/tiny_ros/ros/duration.h',
              'components/tiny_ros/ros/msg.h',
              'components/tiny_ros/ros/node_handle.h',
@@ -724,6 +722,7 @@ def roslib_copy_roslib_files(path):
              'components/tiny_ros/ros/subscriber.h',
              'components/tiny_ros/ros/service_server.h',
              'components/tiny_ros/ros/service_client.h',
+             'components/tiny_ros/ros/threadpool.h',
              'components/tiny_ros/ros/hardware.h',
              'components/tiny_ros/ros/time.h']
 

@@ -30,9 +30,9 @@ public:
     this->topic_ = topic_name;
     this->call_resp = NULL;
     this->call_req = NULL;
-    this->waiting = true;
     rt_mutex_init(&mutex_, "sc", RT_IPC_FLAG_FIFO);
     rt_mutex_init(&g_mutex_, "gsc", RT_IPC_FLAG_FIFO);
+    rt_sem_init(&sem_, "sem", 0, RT_IPC_FLAG_FIFO);
   }
   virtual bool call(MReq & request, MRes & response, int duration = 3)
   {
@@ -49,23 +49,22 @@ public:
       rt_mutex_release(gg_mutex_);
       
       if (pub.publish(&request) <= 0) { break; }
-      this->waiting = true;
+      // reset notify
+      rt_sem_control(&sem_, RT_IPC_CMD_RESET, NULL);
       rt_mutex_release(&mutex_);
       
-      int count = (duration * 1000) / 50;
-      while (this->waiting && count >= 0) {
-        if (!this->waiting) { ret = true; break; }
-        if (count == 0) { break; }
-        rt_thread_delay(50);
-        count--;
-      }
-      if (!ret) {
+      if (rt_sem_take(&sem_, (duration * 1000)) != RT_EOK) {
+        ret = false;
         printf("Service[%s] call_req.id: %u, call timeout", this->topic_, call_req->getID());
+      } else {
+        ret = true;
       }
+
       rt_mutex_take(&mutex_, RT_WAITING_FOREVER);
     } while(0);
     
     call_req = NULL; call_resp = NULL;
+    rt_mutex_release(&mutex_);
     rt_mutex_release(&g_mutex_);
     return ret;
   }
@@ -84,7 +83,7 @@ public:
 
         if (req_id == resp_id) {
           call_resp->deserialize(data);
-          this->waiting = false;
+          rt_sem_release(&sem_);
         }
       }
       rt_mutex_release(&mutex_);
@@ -109,15 +108,17 @@ public:
   }
 
   ~ServiceClient() {
-    rt_mutex_delete(gg_mutex_);
+    rt_sem_detach(&sem_);
+    rt_mutex_detach(&mutex_);
+    rt_mutex_detach(&g_mutex_);
   }
 
   MReq req;
   MRes resp;
   MReq * call_req;
   MRes * call_resp;
-  bool waiting;
   Publisher pub;
+  struct rt_semaphore sem_;
   struct rt_mutex mutex_;
   struct rt_mutex g_mutex_;
   static uint32_t gg_id_;

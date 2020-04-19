@@ -10,13 +10,16 @@
 #include <thread>
 #include "tiny_ros/ros/node_handle.h"
 namespace tinyros {
+static std::string ip_addr_ = "127.0.0.1";
+  
+//////////////////////////////////////////
 static bool main_loop_init_ = false;
 static std::mutex main_loop_mutex_;
 static std::thread* tinyros_main_loop_thread_ = NULL;
 
 static void tinyros_main_loop() {
 retry:
-  tinyros::nh()->initNode();
+  tinyros::nh()->initNode(ip_addr_);
   while (tinyros::nh()->ok()) {
     tinyros::nh()->spin();
 #ifdef WIN32

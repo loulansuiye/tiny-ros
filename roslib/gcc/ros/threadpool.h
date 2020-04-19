@@ -17,6 +17,8 @@
 #include <functional>
 #include <mutex>
 #include <condition_variable>
+
+namespace tinyros {
 class ThreadPool{
 public:
   typedef std::function<void()> Task;
@@ -35,8 +37,9 @@ public:
 
   void shutdown() {
     {
-      std::unique_lock<std::mutex> lock(mutex_);
       started_ = false;
+      std::unique_lock<std::mutex> lock(mutex_);
+      tasks_.clear();
       cond_.notify_all();
     }
 
@@ -48,16 +51,20 @@ public:
   }
   
   void schedule(const Task& task) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    tasks_.push_back(task);
-    cond_.notify_one();
+    if (started_) {
+      std::unique_lock<std::mutex> lock(mutex_);
+      tasks_.push_back(task);
+      cond_.notify_one();
+    }
   }
 
 private:
   void thread_loop() {
     while(started_) {
       Task task = take();
-      if(task) { task(); }
+      if(started_ && task) { 
+        task();
+      }
     }
   }
   
@@ -69,7 +76,7 @@ private:
 
     Task task;
     Tasks::size_type size = tasks_.size();
-    if(!tasks_.empty() && started_) {
+    if(started_ && !tasks_.empty()) {
       task = tasks_.front();
       tasks_.pop_front();
     }
@@ -86,6 +93,8 @@ private:
   std::condition_variable cond_;
   bool started_;
 };
+
+}
 
 #endif //TINYROS_THREADPOOL_H_
 
